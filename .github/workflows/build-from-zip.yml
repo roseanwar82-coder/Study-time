@@ -1,0 +1,93 @@
+name: Build Android APK
+
+# Builds an installable APK on GitHub's runners (they include the Android SDK).
+# Run it from the Actions tab, or it runs automatically on pushes to main
+# and on version tags (v*). The APK is signed with the debug key, which is
+# fine for installing on your own phone.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+# Cancel an older run of the same branch when a new one starts.
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # needed only to attach the APK to a GitHub Release on tags
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('package.json', 'app.json') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Install packages
+        run: npm install
+
+      - name: Align Expo package versions to the SDK
+        run: npx expo install --fix
+
+      - name: Checks
+        run: |
+          npm run verify
+          npm run typecheck
+          npm test
+          npm run test:backend
+
+      - name: Generate the native Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
+        env:
+          EXPO_PUBLIC_AI_ENDPOINT: ${{ secrets.AI_ENDPOINT }}
+          EXPO_PUBLIC_AI_TOKEN: ${{ secrets.AI_TOKEN }}
+
+      - name: Check the APK exists
+        run: |
+          ls -l android/app/build/outputs/apk/release/*.apk
+          test -s android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk majesto.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: majesto-apk
+          path: majesto.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach APK to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: majesto.apk
+          
